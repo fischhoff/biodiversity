@@ -1,0 +1,137 @@
+---
+title: "biodiversity"
+author: "Ilya"
+date: "3/21/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#read in shapefile of protected areas and reproject and save as PAD_wgs84.Rdata
+```{r}
+  library("rgdal")
+ library("raster") 
+library("sp")
+
+#source: https://gapanalysis.usgs.gov/padus/data/download/
+PAD <- shapefile("PADUS1_4Combined.shp")
+#change datum
+PAD_wgs84 <- spTransform(PAD, CRS("+proj=longlat +datum=WGS84"))
+
+#assign cooordinates (package: sp)
+PAD_coordinates = coordinates(PAD_wgs84)
+print(proc.time() - ptm)
+
+PAD_wgs84$X = PAD_coordinates[,1]
+PAD_wgs84$Y = PAD_coordinates[,2]
+
+save(PAD_wgs84, file = "PAD_wgs84.Rdata")
+
+```
+
+#read in iNaturalist data and assign it to parks
+```{r}
+rm(list = ls())
+library("raster")
+library("data.table")
+load("PAD_wgs84.Rdata")
+
+#occurrence download available here: 
+#https://www.gbif.org/occurrence/download/0016851-180131172636756
+inat = fread("occurrence.txt",blank.lines.skip=TRUE)
+inat = as.data.frame(inat)
+inat$longitude <- inat$decimalLongitude
+inat$latitude <- inat$decimalLatitude
+inat.ok= filter(inat, !is.na(decimalLatitude) & !is.na(decimalLongitude))
+
+#turn it into a SpatialPointsDataFrame
+coordinates(inat.ok) <- c("decimalLongitude","decimalLatitude")#package sp
+
+save(inat.ok,file = "inat.ok.Rdata")
+
+ # tell R that inat coordinates are in the same lat/lon reference system
+# as the parks data 
+projection(inat.ok) <- projection(PAD_wgs84)
+
+# use 'over' with parks as a SpatialPolygonsDataFrame
+# object, to determine which park (if any) contains each sighting, and
+# store the park name as an attribute of the data
+inat.ok$park <- over(inat.ok, PAD_wgs84)$Unit_Nm#name of park
+inat.ok$X.park <- over(inat.ok, PAD_wgs84)$X
+inat.ok$Y.park <- over(inat.ok, PAD_wgs84)$Y
+inat.ok$park.acres <- over(inat.ok, PAD_wgs84)$GIS_Acres
+
+save(inat.ok, file = "inat.ok.Rdata")
+
+```
+
+#summarize iNaturalist data by park: how many of each taxon are seen in each park?
+```{r}
+library("dplyr")
+load("inat.ok.Rdata")
+df = inat.ok
+class_list = c("Amphibia", "Aves", "Mammalia", "Reptilia", "Arachnida", "Insecta", "Actinopterygii")
+class_list_common = c("Amphibians", "Birds", "Mammals", "Reptiles", "Arachnids", "Insects", "Fish")
+kingdom_list = c("Fungi", "Plantae")
+organism_type <- function(df, class_list, class_list_common, kingdom_list) {
+  df$organism_type = "Other"
+  for (a in 1:length(class_list)){#for each class, assign that class to organism type
+    df$organism_type[which(df$class==class_list[a])] = class_list_common[a]
+  }
+  for (b in 1:length(kingdom_list)){#for each kingdom, assign that kingdom to organism type
+    df$organism_type[which(df$kingdom==kingdom_list[b])] = kingdom_list[b]
+  }
+  return(df)
+}
+
+ptm <- proc.time()#not long -- couple of seconds
+df =organism_type(df, class_list, class_list_common, kingdom_list)
+df = subset(df, organism_type!="Other")
+
+keep.col = c("recordedBy",
+             "longitude",
+             "latitude",
+             "X.park",
+             "Y.park",
+             "park",
+             "park.acres",
+             "phylum",
+             "kingdom",
+             "species",
+             "class",
+             "organism_type",
+             "eventDate",
+             "eventTime")
+df =df[,keep.col]
+
+ptm <- proc.time()#not long -- couple of seconds
+df = data.frame(df)
+df.park <- df %>%
+  group_by(park, organism_type) %>%
+    summarise(
+    X.park = X.park[1],
+    Y.park = Y.park[1],
+    count = n(), 
+    observers = length(unique(recordedBy)),
+    species = length(unique(species))
+    )
+ # print(proc.time() - ptm)
+#remove NA points
+df.park = subset(df.park, !is.na(df.park$X.park))
+write.csv(df.park, file = "inat.park.csv")
+
+# inds = which(is.na(df.park$X.park))
+```
+
+
+#run shiny app
+```{r}
+library(shiny)
+runApp()
+#use rsconnect to connect to shinyapps.io (https://www.shinyapps.io/admin/#/tokens)
+#use global.R, ui.R, server.R; 
+
+```
+
